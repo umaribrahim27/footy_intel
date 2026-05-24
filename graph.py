@@ -1,11 +1,12 @@
-from langgraph.graph.message import add_messages
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AnyMessage
 from langchain_core.tools import tool
 from vector_store import retrieve
+from live_stats import get_live_matches, get_matches_by_date, search_player
 import os
 from dotenv import load_dotenv
 
@@ -13,7 +14,7 @@ load_dotenv()
 
 # --- STATE ---
 class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list[AnyMessage], add_messages]
     question: str
     answer: str
     tool_used: str | None
@@ -27,7 +28,30 @@ def retrieve_football_context(query: str) -> str:
     results = retrieve(query)
     return "\n".join(results)
 
-tools = [retrieve_football_context]
+@tool
+def fetch_live_matches() -> str:
+    """Fetches currently live football matches and scores.
+    Use when asked about ongoing games or live scores."""
+    return get_live_matches()
+
+@tool
+def fetch_matches_today() -> str:
+    """Fetches today's football matches and results.
+    Use when asked about today's matches or recent results."""
+    return get_matches_by_date()
+
+@tool
+def fetch_player_info(name: str) -> str:
+    """Searches for a football player by name and returns their current team.
+    Use when asked about a specific player's current club."""
+    return search_player(name)
+
+tools = [
+    retrieve_football_context,
+    fetch_live_matches,
+    fetch_matches_today,
+    fetch_player_info
+]
 
 # --- MODEL ---
 llm = ChatOpenAI(
@@ -35,15 +59,19 @@ llm = ChatOpenAI(
     api_key=os.getenv("OPENAI_API_KEY")
 ).bind_tools(tools)
 
-system_prompt = SystemMessage(content="""You are a football intelligence assistant. 
-Use retrieve_football_context when you need background knowledge about players, tactics, or teams.
-Always base your answers on retrieved context when available.""")
+system_prompt = SystemMessage(content="""You are a football intelligence assistant.
+You have access to the following tools:
+- retrieve_football_context: for tactics, player history, team history, background knowledge
+- fetch_live_matches: for currently live scores
+- fetch_matches_today: for today's matches and recent results
+- fetch_player_info: for finding a player's current club
+
+Always use the most relevant tool before answering. Be concise and specific.""")
 
 # --- NODES ---
 def agent_node(state: AgentState) -> AgentState:
     messages = state["messages"]
-    
-    # only prepend system message if it's not already there
+
     if not isinstance(messages[0], SystemMessage):
         messages = [system_prompt] + messages
 
@@ -98,7 +126,7 @@ footy_graph = graph.compile()
 
 def run_agent(question: str) -> dict:
     result = footy_graph.invoke({
-        "messages": [system_prompt, HumanMessage(content=question)],
+        "messages": [HumanMessage(content=question)],
         "question": question,
         "answer": "",
         "tool_used": None,
