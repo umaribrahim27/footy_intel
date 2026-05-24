@@ -36,8 +36,9 @@ def fetch_live_matches() -> str:
 
 @tool
 def fetch_matches_today() -> str:
-    """Fetches today's football matches and results.
-    Use when asked about today's matches or recent results."""
+    """Fetches today's and recent football matches and results.
+    Use this for ANY question about recent scores, results, last week's games,
+    yesterday's matches, or any recent fixtures."""
     return get_matches_by_date()
 
 @tool
@@ -62,11 +63,12 @@ llm = ChatOpenAI(
 system_prompt = SystemMessage(content="""You are a football intelligence assistant.
 You have access to the following tools:
 - retrieve_football_context: for tactics, player history, team history, background knowledge
-- fetch_live_matches: for currently live scores
-- fetch_matches_today: for today's matches and recent results
+- fetch_live_matches: for currently live scores right now
+- fetch_matches_today: for today's matches, recent results, last week's games, yesterday's scores
 - fetch_player_info: for finding a player's current club
 
-Always use the most relevant tool before answering. Be concise and specific.""")
+For any question about recent or current match results, ALWAYS use fetch_matches_today or fetch_live_matches.
+Never use retrieve_football_context for live or recent match data.""")
 
 # --- NODES ---
 def agent_node(state: AgentState) -> AgentState:
