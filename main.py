@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from openai import OpenAI
 from dotenv import load_dotenv
+from graph import run_agent
 import os
 import time
 import json
@@ -12,11 +12,6 @@ load_dotenv()
 
 app = FastAPI()
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-
-# logging setup
 logging.basicConfig(
     filename="logs.json",
     level=logging.INFO,
@@ -26,14 +21,15 @@ logging.basicConfig(
 class QuestionRequest(BaseModel):
     question: str
 
-def log_request(question: str, answer: str, tokens: int, latency: float, status: str):
+def log_request(question: str, answer: str, tokens: int, latency: float, status: str, tool_used: str | None):
     entry = {
         "timestamp": datetime.utcnow().isoformat(),
         "question": question,
         "answer_preview": answer[:100],
         "tokens_used": tokens,
         "latency_seconds": round(latency, 3),
-        "status": status
+        "status": status,
+        "tool_used": tool_used
     }
     logging.info(json.dumps(entry))
 
@@ -49,27 +45,27 @@ def ask(request: QuestionRequest):
     start = time.time()
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a football analysis assistant. Answer questions about football stats, players, and tactics."},
-                {"role": "user", "content": request.question}
-            ]
-        )
-        answer = response.choices[0].message.content
-        tokens = response.usage.total_tokens
+        result = run_agent(request.question)
         latency = time.time() - start
 
-        log_request(request.question, answer, tokens, latency, "success")
+        log_request(
+            request.question,
+            result["answer"],
+            result["tokens"],
+            latency,
+            "success",
+            result["tool_used"]
+        )
 
         return {
             "question": request.question,
-            "answer": answer,
-            "tokens_used": tokens,
+            "answer": result["answer"],
+            "tool_used": result["tool_used"],
+            "tokens_used": result["tokens"],
             "latency_seconds": round(latency, 3)
         }
 
     except Exception as e:
         latency = time.time() - start
-        log_request(request.question, str(e), 0, latency, "error")
+        log_request(request.question, str(e), 0, latency, "error", None)
         raise HTTPException(status_code=500, detail=str(e))
