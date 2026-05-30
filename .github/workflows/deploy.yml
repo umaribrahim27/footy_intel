@@ -1,0 +1,67 @@
+name: eval and deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v3
+
+      - name: set up python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: install dependencies
+        run: pip install -r requirements.txt
+
+      - name: seed vector store
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: python seed_data.py
+
+      - name: run eval
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+        run: python eval.py
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: eval
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v3
+
+      - name: log in to azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: log in to container registry
+        uses: docker/login-action@v2
+        with:
+          registry: footyintelregistry.azurecr.io
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: footyintelregistry.azurecr.io/footy_intel:latest
+
+      - name: update container app
+        run: |
+          az containerapp update \
+            --name footy-intel-app \
+            --resource-group footy-intel-rg \
+            --image footyintelregistry.azurecr.io/footy_intel:latest
