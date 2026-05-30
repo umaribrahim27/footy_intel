@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 logs.json
 eval_results.json
+mlflow.db
+mlruns/

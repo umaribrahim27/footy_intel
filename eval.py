@@ -1,12 +1,9 @@
 import json
 import time
+import mlflow
 from graph import run_agent
 
 # --- TEST SET ---
-# Each test has:
-# - question: what we ask
-# - expected_tool: what tool the agent should use
-# - keywords: words that should appear in a good answer
 test_cases = [
     {
         "id": "e1",
@@ -74,7 +71,6 @@ test_cases = [
 def score_answer(question: str, answer: str, keywords: list[str]) -> dict:
     if not keywords:
         return {"keyword_score": 1.0, "note": "no keywords defined"}
-    
     answer_lower = answer.lower()
     matched = [kw for kw in keywords if kw.lower() in answer_lower]
     score = len(matched) / len(keywords)
@@ -84,79 +80,96 @@ def score_answer(question: str, answer: str, keywords: list[str]) -> dict:
         "missed": [kw for kw in keywords if kw.lower() not in answer_lower]
     }
 
-def run_eval():
-    results = []
-    tool_correct = 0
-    keyword_scores = []
+# --- EVAL ---
+def run_eval(prompt_version: str = "v1", model: str = "gpt-4o-mini", notes: str = ""):
+    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    mlflow.set_experiment("footy_intel_eval")
 
-    print(f"\nRunning eval on {len(test_cases)} test cases...\n")
+    with mlflow.start_run():
+        # log what changed
+        mlflow.log_param("prompt_version", prompt_version)
+        mlflow.log_param("model", model)
+        mlflow.log_param("notes", notes)
+        mlflow.log_param("test_cases", len(test_cases))
 
-    for tc in test_cases:
-        print(f"[{tc['id']}] {tc['question'][:60]}...")
-        
-        try:
-            start = time.time()
-            result = run_agent(tc["question"])
-            latency = round(time.time() - start, 3)
+        results = []
+        tool_correct = 0
+        keyword_scores = []
 
-            tool_match = result["tool_used"] == tc["expected_tool"]
-            keyword_result = score_answer(tc["question"], result["answer"], tc["keywords"])
+        print(f"\nRunning eval — prompt: {prompt_version} | model: {model}\n")
 
-            if tool_match:
-                tool_correct += 1
-            keyword_scores.append(keyword_result["keyword_score"])
+        for tc in test_cases:
+            print(f"[{tc['id']}] {tc['question'][:60]}...")
 
-            entry = {
-                "id": tc["id"],
-                "question": tc["question"],
-                "expected_tool": tc["expected_tool"],
-                "actual_tool": result["tool_used"],
-                "tool_correct": tool_match,
-                "answer_preview": result["answer"][:150],
-                "keyword_score": keyword_result["keyword_score"],
-                "matched_keywords": keyword_result.get("matched", []),
-                "missed_keywords": keyword_result.get("missed", []),
-                "latency_seconds": latency,
-                "tokens": result["tokens"]
-            }
-            results.append(entry)
+            try:
+                start = time.time()
+                result = run_agent(tc["question"])
+                latency = round(time.time() - start, 3)
 
-            status = "✅" if tool_match else "❌"
-            print(f"  tool: {status} (expected {tc['expected_tool']}, got {result['tool_used']})")
-            print(f"  keywords: {keyword_result['keyword_score']} | latency: {latency}s\n")
+                tool_match = result["tool_used"] == tc["expected_tool"]
+                keyword_result = score_answer(tc["question"], result["answer"], tc["keywords"])
 
-        except Exception as e:
-            print(f"  ERROR: {str(e)}\n")
-            results.append({"id": tc["id"], "error": str(e)})
+                if tool_match:
+                    tool_correct += 1
+                keyword_scores.append(keyword_result["keyword_score"])
 
-    # --- SUMMARY ---
-    tool_accuracy = round(tool_correct / len(test_cases), 2)
-    avg_keyword_score = round(sum(keyword_scores) / len(keyword_scores), 2)
-    avg_latency = round(sum(r.get("latency_seconds", 0) for r in results) / len(results), 3)
-    avg_tokens = round(sum(r.get("tokens", 0) for r in results) / len(results))
+                entry = {
+                    "id": tc["id"],
+                    "question": tc["question"],
+                    "expected_tool": tc["expected_tool"],
+                    "actual_tool": result["tool_used"],
+                    "tool_correct": tool_match,
+                    "answer_preview": result["answer"][:150],
+                    "keyword_score": keyword_result["keyword_score"],
+                    "matched_keywords": keyword_result.get("matched", []),
+                    "missed_keywords": keyword_result.get("missed", []),
+                    "latency_seconds": latency,
+                    "tokens": result["tokens"]
+                }
+                results.append(entry)
 
-    summary = {
-        "total_cases": len(test_cases),
-        "tool_accuracy": tool_accuracy,
-        "avg_keyword_score": avg_keyword_score,
-        "avg_latency_seconds": avg_latency,
-        "avg_tokens_per_query": avg_tokens,
-        "tool_correct": tool_correct,
-        "tool_incorrect": len(test_cases) - tool_correct
-    }
+                status = "✅" if tool_match else "❌"
+                print(f"  tool: {status} | keywords: {keyword_result['keyword_score']} | latency: {latency}s\n")
 
-    print("=" * 50)
-    print("EVAL SUMMARY")
-    print("=" * 50)
-    for k, v in summary.items():
-        print(f"  {k}: {v}")
+            except Exception as e:
+                print(f"  ERROR: {str(e)}\n")
+                results.append({"id": tc["id"], "error": str(e)})
 
-    # save results
-    with open("eval_results.json", "w") as f:
-        json.dump({"summary": summary, "results": results}, f, indent=2)
+        # --- SUMMARY ---
+        tool_accuracy = round(tool_correct / len(test_cases), 2)
+        avg_keyword_score = round(sum(keyword_scores) / len(keyword_scores), 2)
+        avg_latency = round(sum(r.get("latency_seconds", 0) for r in results) / len(results), 3)
+        avg_tokens = round(sum(r.get("tokens", 0) for r in results) / len(results))
 
-    print("\nFull results saved to eval_results.json")
-    return summary
+        # log metrics to mlflow
+        mlflow.log_metric("tool_accuracy", tool_accuracy)
+        mlflow.log_metric("avg_keyword_score", avg_keyword_score)
+        mlflow.log_metric("avg_latency_seconds", avg_latency)
+        mlflow.log_metric("avg_tokens_per_query", avg_tokens)
+
+        # save detailed results as artifact
+        with open("eval_results.json", "w") as f:
+            json.dump({"summary": {
+                "prompt_version": prompt_version,
+                "model": model,
+                "tool_accuracy": tool_accuracy,
+                "avg_keyword_score": avg_keyword_score,
+                "avg_latency_seconds": avg_latency,
+                "avg_tokens_per_query": avg_tokens
+            }, "results": results}, f, indent=2)
+
+        mlflow.log_artifact("eval_results.json")
+
+        print("=" * 50)
+        print("EVAL SUMMARY")
+        print("=" * 50)
+        print(f"  prompt_version:      {prompt_version}")
+        print(f"  model:               {model}")
+        print(f"  tool_accuracy:       {tool_accuracy}")
+        print(f"  avg_keyword_score:   {avg_keyword_score}")
+        print(f"  avg_latency_seconds: {avg_latency}")
+        print(f"  avg_tokens:          {avg_tokens}")
+        print("\nLogged to MLflow.")
 
 if __name__ == "__main__":
-    run_eval()
+    run_eval(prompt_version="v1", model="gpt-4o-mini", notes="baseline run")
